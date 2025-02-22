@@ -39,9 +39,39 @@ const pool = mysql.createPool({
         INDEX idx_date_of_sale (date_of_sale)
       )
     `);
+    console.log('Transactions table created or already exists');
+
+    const [countResult] = await conn.query('SELECT COUNT(*) as count FROM transactions');
+    const count = countResult[0].count;
+    if (count === 0) {
+      console.log('No data found, seeding database...');
+      const response = await axios.get('https://s3.amazonaws.com/roxiler.com/product_transaction.json');
+      const seedData = response.data;
+
+      const insertQuery = `
+        INSERT INTO transactions (id, title, description, price, category, image, sold, date_of_sale)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+      for (const item of seedData) {
+        await conn.query(insertQuery, [
+          item.id,
+          item.title,
+          item.description,
+          item.price,
+          item.category,
+          item.image,
+          item.sold,
+          item.dateOfSale
+        ]);
+      }
+      console.log(`Seeded ${seedData.length} documents into transactions table`);
+    } else {
+      console.log(`Database already contains ${count} records, skipping seed`);
+    }
+
     conn.release();
   } catch (err) {
-    console.error('MySQL connection or table creation error:', err);
+    console.error('MySQL connection or seeding error:', err);
   }
 })();
 
@@ -50,7 +80,7 @@ const months = [
   'July', 'August', 'September', 'October', 'November', 'December'
 ];
 
-// Initialize Database API
+// Optional: Manual re-seeding endpoint
 app.get('/api/init', async (req, res) => {
   try {
     console.log('Fetching data from third-party API...');
@@ -90,9 +120,9 @@ app.get('/api/init', async (req, res) => {
   }
 });
 
-// List Transactions
+// List Transactions (Updated to return all data if perPage is not specified)
 app.get('/api/transactions', async (req, res) => {
-  const { month, search = '', page = 1, perPage = 10 } = req.query;
+  const { month, search = '', page = 1, perPage } = req.query;
 
   if (!month || !months.includes(month)) {
     return res.status(400).send({ error: 'Invalid month' });
@@ -120,8 +150,11 @@ app.get('/api/transactions', async (req, res) => {
       countParams.push(searchParam, searchParam, searchParam);
     }
 
-    const offset = (page - 1) * perPage;
-    query += ` LIMIT ${perPage} OFFSET ${offset}`;
+    // Apply pagination only if perPage is specified
+    if (perPage) {
+      const offset = (page - 1) * perPage;
+      query += ` LIMIT ${perPage} OFFSET ${offset}`;
+    }
 
     const [transactions] = await pool.query(query, params);
     const [totalResult] = await pool.query(countQuery, countParams);
@@ -130,9 +163,9 @@ app.get('/api/transactions', async (req, res) => {
     res.send({
       transactions,
       total,
-      page: Number(page),
-      perPage: Number(perPage),
-      totalPages: Math.ceil(total / perPage) || 1
+      page: perPage ? Number(page) : 1,
+      perPage: perPage ? Number(perPage) : total,
+      totalPages: perPage ? Math.ceil(total / perPage) || 1 : 1
     });
   } catch (error) {
     console.error('Error fetching transactions:', error);
@@ -252,6 +285,7 @@ app.get('/api/piechart', async (req, res) => {
 });
 
 // Combined API
+// Replace the /api/combined endpoint in server.js with this
 app.get('/api/combined', async (req, res) => {
   const { month } = req.query;
 
@@ -261,9 +295,9 @@ app.get('/api/combined', async (req, res) => {
 
   try {
     const [statistics, barchart, piechart] = await Promise.all([
-      axios.get(`http://localhost:5000/api/statistics?month=${month}`),
-      axios.get(`http://localhost:5000/api/barchart?month=${month}`),
-      axios.get(`http://localhost:5000/api/piechart?month=${month}`)
+      axios.get(`https://roxiler-backend-kpxn.onrender.com/api/statistics?month=${month}`),
+      axios.get(`https://roxiler-backend-kpxn.onrender.com/api/barchart?month=${month}`),
+      axios.get(`https://roxiler-backend-kpxn.onrender.com/api/piechart?month=${month}`)
     ]);
 
     res.send({
@@ -273,7 +307,7 @@ app.get('/api/combined', async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching combined data:', error);
-    res.status(500).send({ error: 'Error fetching combined data' });
+    res.status(500).send({ error: 'Error fetching combined data', details: error.message });
   }
 });
 
